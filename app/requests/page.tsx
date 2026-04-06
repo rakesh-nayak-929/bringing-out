@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { db, auth } from "@/lib/firebase";
 import { signOut, onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
-
 import ProtectedRoute from "@/app/components/ProtectedRoute";
 
 import {
@@ -18,44 +17,8 @@ import {
   query,
   where,
   orderBy,
-  setDoc,
   getDoc,
 } from "firebase/firestore";
-
-// 🎨 Styles
-const styles = {
-  container: { padding: "20px", maxWidth: "800px", margin: "auto" },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "20px",
-  },
-  inputBox: { display: "flex", gap: "10px", marginBottom: "20px" },
-  input: {
-    flex: 1,
-    padding: "12px",
-    borderRadius: "8px",
-    border: "1px solid #ccc",
-  },
-  button: {
-    padding: "10px 14px",
-    borderRadius: "8px",
-    border: "none",
-    cursor: "pointer",
-  },
-  primaryBtn: { backgroundColor: "#4f46e5", color: "white" },
-  dangerBtn: { backgroundColor: "#ef4444", color: "white" },
-  card: {
-    padding: "15px",
-    borderRadius: "12px",
-    marginBottom: "12px",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-    backgroundColor: "#fff",
-  },
-  acceptedCard: { borderLeft: "5px solid green" },
-  pendingCard: { borderLeft: "5px solid orange" },
-};
 
 export default function RequestsPage() {
   const [text, setText] = useState("");
@@ -66,264 +29,186 @@ export default function RequestsPage() {
   const [role, setRole] = useState("");
   const router = useRouter();
 
-  // ✅ STEP 1: Listen to auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      console.log("Current User:", currentUser); // Debug log
       setUser(currentUser);
-
       if (currentUser) {
-        try {
-          const ref = doc(db, "users", currentUser.uid);
-          const snap = await getDoc(ref);
-
-          if (snap.exists()) {
-            setRole(snap.data().role || "");
-          } else {
-            console.log("No profile found for UID:", currentUser.uid);
-            setRole("");
-          }
-        } catch (err) {
-          console.error("Error fetching role:", err);
-          setRole("");
-        }
+        const ref = doc(db, "users", currentUser.uid);
+        const snap = await getDoc(ref);
+        setRole(snap.exists() ? snap.data().role || "" : "");
       }
     });
-    return () => unsubscribe();
+    return unsubscribe;
   }, []);
 
-  // 🔥 STEP: Firestore listener depends on role
   useEffect(() => {
     if (!user || !role) return;
+    const q = role === "promoter"
+        ? query(collection(db, "requests"), where("promoterId", "==", user.uid), orderBy("createdAt", "desc"))
+        : query(collection(db, "requests"), orderBy("createdAt", "desc"));
 
-    let q;
-
-    if (role === "promoter") {
-      q = query(
-        collection(db, "requests"),
-        where("userId", "==", user.uid),
-        orderBy("createdAt", "desc")
-      );
-    } else {
-      q = query(
-        collection(db, "requests"),
-        orderBy("createdAt", "desc")
-      );
-    }
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const data: any[] = [];
-        snapshot.forEach((docItem) => {
-          data.push({ id: docItem.id, ...docItem.data() });
-        });
-        setRequests(data);
-      },
-      (error) => {
-        console.log("Snapshot error:", error.message);
-      }
-    );
-
-    return () => unsubscribe();
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setRequests(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return unsubscribe;
   }, [user, role]);
 
-  // 🔧 Add Request
-  const addRequest = async () => {
-    if (!text.trim() || adding) return;
-
-    if (!user) {
-      router.push("/login");
-      return;
+  // ✅ RESTORED DELETE FUNCTION
+  const deleteRequest = async (id: string) => {
+    if (!window.confirm("Are you sure you want to remove this deal?")) return;
+    setLoadingId(id);
+    try {
+      await deleteDoc(doc(db, "requests", id));
+    } catch (error) {
+      console.error("Delete error:", error);
+      alert("Failed to delete request.");
+    } finally {
+      setLoadingId(null);
     }
+  };
 
+  const addRequest = async () => {
+    if (!text.trim() || adding || !user) return;
     setAdding(true);
     try {
       await addDoc(collection(db, "requests"), {
-        message: text.trim(),
+        title: text.trim().substring(0, 25) + (text.length > 25 ? "..." : ""),
+        description: text.trim(),
         status: "pending",
         createdAt: serverTimestamp(),
-        userId: user.uid,
-        role: role,
+        promoterId: user.uid,
+        promoterEmail: user.email,
+        creatorId: null,
+        creatorEmail: null,
+        type: "collaboration",
+        completed: false,
+        rating: 0,
+        review: ""
       });
       setText("");
-    } catch (error) {
-      console.log("Add Error:", error);
-    } finally {
-      setAdding(false);
-    }
+    } finally { setAdding(false); }
   };
 
-  // 🔧 Delete Request
-  const deleteRequest = async (id: string) => {
-    try {
-      setLoadingId(id);
-      await deleteDoc(doc(db, "requests", id));
-    } catch (error) {
-      console.log("Delete Error:", error);
-    } finally {
-      setLoadingId(null);
-    }
-  };
-
-  // 🔧 Update Status
   const updateStatus = async (id: string) => {
+    setLoadingId(id);
     try {
-      setLoadingId(id);
-      await updateDoc(doc(db, "requests", id), { status: "accepted" });
-    } catch (error) {
-      console.log("Update Error:", error);
-    } finally {
-      setLoadingId(null);
-    }
+      await updateDoc(doc(db, "requests", id), {
+        status: "accepted",
+        creatorId: user.uid,
+        creatorEmail: user.email
+      });
+    } finally { setLoadingId(null); }
   };
 
-  // ✅ Logout
-  const handleLogout = async () => {
+  const markCompleted = async (id: string) => {
     try {
-      await setDoc(doc(db, "users", user.uid), {
-  uid: user.uid,
-  email: user.email,
-  role: role,
-  createdAt: serverTimestamp(),
-});
+      await updateDoc(doc(db, "requests", id), { completed: true });
+    } catch (err) { console.error(err); }
+  };
 
+  const getPartnerId = (req: any) => {
+    return role === "creator" ? req.promoterId : req.creatorId;
+  };
 
-  // 🔓 Filtering
-  const pendingRequests = requests.filter((r) => r.status === "pending");
-  const acceptedRequests = requests.filter((r) => r.status === "accepted");
+  if (!user) return <div style={styles.loadingContainer}>Loading...</div>;
 
-  // ✅ SAFE FIX: Avoid infinite loading
-  if (user === null) {
-  return <p>Loading...</p>; // waiting for auth
-}
+  const pending = requests.filter(r => r.status === "pending");
+  const active = requests.filter(r => r.status === "accepted" && !r.completed && (r.promoterId === user.uid || r.creatorId === user.uid));
 
-if (user && !role) {
-  return <p>No profile found ⚠️ Please re-register</p>;
-}
-
-
-  if (!role) {
-    return (
-      <div style={styles.container}>
-        <p>No profile found ⚠️ Please re-register</p>
-      </div>
-    );
-  }
   return (
     <ProtectedRoute>
       <div style={styles.container}>
-        {/* Header */}
-        <div style={styles.header}>
-          <h1>
-            {role === "creator" ? "📥 Incoming Requests" : "📤 My Promotions"}
-          </h1>
-          <button
-            onClick={handleLogout}
-            style={{ ...styles.button, ...styles.dangerBtn }}
-          >
-            Logout
-          </button>
-        </div>
+        <header style={styles.header}>
+          <div>
+            <h1 style={styles.title}>{role === "creator" ? "Creator Feed" : "Promoter Dashboard"}</h1>
+            <span style={styles.roleBadge}>{role}</span>
+          </div>
+          <button onClick={() => signOut(auth)} style={styles.logoutBtn}>Logout</button>
+        </header>
 
-        {/* Show Role */}
-        <h3>Role: {role || "Not assigned"}</h3>
-
-        {/* Input (only for promoters) */}
         {role === "promoter" && (
-          <div style={styles.inputBox}>
-            <input
-              type="text"
-              placeholder="Enter request..."
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !adding) addRequest();
-              }}
-              style={styles.input}
-            />
-            <button
-              onClick={addRequest}
-              style={{ ...styles.button, ...styles.primaryBtn }}
-              disabled={adding}
-            >
-              {adding ? "Adding..." : "Add"}
-            </button>
+          <div style={styles.inputSection}>
+            <div style={styles.inputContainer}>
+              <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Type a deal description..." style={styles.textInput} />
+              <button onClick={addRequest} disabled={adding} style={styles.primaryBtn}>{adding ? "..." : "➕ Post Deal"}</button>
+            </div>
           </div>
         )}
 
-        {/* Pending */}
-        <h2>🟡 Pending ({pendingRequests.length})</h2>
-        {pendingRequests.length === 0 ? (
-          <p style={{ opacity: 0.6 }}>No pending requests</p>
-        ) : (
-          pendingRequests.map((req) => (
-            <div key={req.id} style={{ ...styles.card, ...styles.pendingCard }}>
-              <p>
-                <strong>{req.message}</strong>
-              </p>
-              <p>Status: {req.status}</p>
-              <p style={{ fontSize: "12px", opacity: 0.6 }}>
-                ID: {req.id.slice(0, 6)}
-              </p>
-              <p style={{ fontSize: "12px", opacity: 0.6 }}>
-                {req.createdAt?.toDate?.().toLocaleString?.() || "Just now"}
-              </p>
+        <div style={styles.content}>
+          <section style={styles.section}>
+            <h2 style={styles.sectionTitle}>⏳ Available Requests ({pending.length})</h2>
+            <div style={styles.compactGrid}>
+              {pending.map(req => (
+                <div key={req.id} style={styles.compactCard}>
+                  <div style={styles.infoBox}>
+                    <p style={{ margin: 0 }}><strong>📌 {req.title || "No title"}</strong></p>
+                    <p style={{ marginTop: "5px", fontSize: "12px" }}>🧑 From: {req.promoterEmail}</p>
+                    <p style={{ marginTop: "5px", color: "#555", fontSize: "13px" }}>
+                      📄 {req.description || "No description provided."}
+                    </p>
+                  </div>
 
-              {role === "creator" && (
-                <button
-                  onClick={() => updateStatus(req.id)}
-                  style={{ ...styles.button, ...styles.primaryBtn }}
-                  disabled={loadingId !== null}
-                >
-                  {loadingId === req.id ? "Processing..." : "Accept"}
-                </button>
-              )}
-
-              <button
-                onClick={() => deleteRequest(req.id)}
-                style={{
-                  ...styles.button,
-                  ...styles.dangerBtn,
-                  marginLeft: "10px",
-                }}
-                disabled={loadingId !== null}
-              >
-                {loadingId === req.id ? "Processing..." : "Delete"}
-              </button>
+                  <div style={styles.compactActions}>
+                    {role === "creator" && (
+                      <button onClick={() => updateStatus(req.id)} style={styles.miniCompleteBtn}>Accept Deal</button>
+                    )}
+                    {req.promoterId === user.uid && (
+                      <button 
+                        onClick={() => deleteRequest(req.id)} 
+                        disabled={loadingId === req.id}
+                        style={{...styles.miniChatBtn, color: 'red'}}
+                      >
+                        {loadingId === req.id ? "..." : "Remove"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))
-        )}
+          </section>
 
-        {/* Accepted */}
-        <h2>🟢 Accepted ({acceptedRequests.length})</h2>
-        {acceptedRequests.length === 0 ? (
-          <p style={{ opacity: 0.6 }}>No accepted requests</p>
-        ) : (
-          acceptedRequests.map((req) => (
-            <div key={req.id} style={{ ...styles.card, ...styles.acceptedCard }}>
-              <p>
-                <strong>{req.message}</strong>
-              </p>
-              <p>Status: {req.status}</p>
-              <p style={{ fontSize: "12px", opacity: 0.6 }}>
-                ID: {req.id.slice(0, 6)}
-              </p>
-              <p style={{ fontSize: "12px", opacity: 0.6 }}>
-                {req.createdAt?.toDate?.().toLocaleString?.() || "Just now"}
-              </p>
-
-              <button
-                onClick={() => deleteRequest(req.id)}
-                style={{ ...styles.button, ...styles.dangerBtn }}
-                disabled={loadingId !== null}
-              >
-                {loadingId === req.id ? "Processing..." : "Delete"}
-              </button>
+          <section style={styles.section}>
+            <h2 style={styles.sectionTitle}>🔄 In Progress ({active.length})</h2>
+            <div style={styles.compactGrid}>
+              {active.map(req => (
+                <div key={req.id} style={{...styles.compactCard, borderLeft: '4px solid #4ade80'}}>
+                   <div style={styles.infoBox}>
+                    <p><strong>📌 {req.title}</strong></p>
+                    <p style={{fontSize: "12px"}}>🤝 {role === "creator" ? req.promoterEmail : req.creatorEmail}</p>
+                  </div>
+                  <div style={styles.compactActions}>
+                    <button onClick={() => router.push(`/chat?user=${getPartnerId(req)}`)} style={styles.miniChatBtn}>💬 Chat</button>
+                    {role === "promoter" && <button onClick={() => markCompleted(req.id)} style={styles.miniCompleteBtn}>Complete</button>}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))
-        )}
-      </div> {/* ✅ closes styles.container */}
+          </section>
+        </div>
+      </div>
     </ProtectedRoute>
   );
-} // ✅ closes RequestsPage component
+}
+
+const styles = {
+  container: { minHeight: "100vh", background: "#f8fafc", paddingBottom: "40px" },
+  loadingContainer: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" },
+  header: { background: "white", padding: "15px 30px", display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 1px 3px rgba(0,0,0,0.1)" },
+  title: { fontSize: "18px", fontWeight: "800", color: "#1e293b" },
+  roleBadge: { fontSize: "10px", background: "#f1f5f9", padding: "2px 8px", borderRadius: "10px", color: "#64748b" },
+  logoutBtn: { background: "#ef4444", color: "white", border: "none", padding: "8px 15px", borderRadius: "6px", cursor: "pointer", fontSize: "12px" },
+  inputSection: { maxWidth: "1000px", margin: "30px auto", padding: "0 20px" },
+  inputContainer: { display: "flex", gap: "10px", background: "white", padding: "12px", borderRadius: "12px", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)" },
+  textInput: { flex: 1, border: "1px solid #e2e8f0", padding: "10px", borderRadius: "8px", outline: "none" },
+  primaryBtn: { background: "#4f46e5", color: "white", border: "none", padding: "8px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: "600" },
+  content: { maxWidth: "1000px", margin: "0 auto", padding: "0 20px" },
+  section: { marginBottom: "40px" },
+  sectionTitle: { color: "#1e293b", fontSize: "16px", marginBottom: "15px", fontWeight: "700" },
+  compactGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "20px" },
+  compactCard: { background: "white", padding: "16px", borderRadius: "16px", boxShadow: "0 1px 3px rgba(0,0,0,0.1)", display: "flex", flexDirection: "column" as const, gap: "12px" },
+  infoBox: { background: "#f9fafb", padding: "12px", borderRadius: "10px", border: "1px solid #f1f5f9" },
+  compactActions: { display: "flex", gap: "10px" },
+  miniChatBtn: { flex: 1, padding: "8px", fontSize: "12px", background: "white", border: "1px solid #e2e8f0", borderRadius: "8px", cursor: "pointer", fontWeight: "600" },
+  miniCompleteBtn: { flex: 1, padding: "8px", fontSize: "12px", background: "#10b981", color: "white", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }
+};

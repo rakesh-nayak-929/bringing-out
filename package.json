@@ -9,12 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
-<<<<<<< HEAD
     "firebase": "^12.10.0",
     "next": "^16.2.0",
-=======
-    "next": "16.1.6",
->>>>>>> 03646d156d49b90e96a2275bd9a7e4befa3b8a57
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
